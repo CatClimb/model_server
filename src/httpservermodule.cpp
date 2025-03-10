@@ -53,9 +53,10 @@ void HTTPServerModule::shutdown() {
         return;
     SPDLOG_INFO("{} shutting down", HTTP_SERVER_MODULE_NAME);
     state = ModuleState::STARTED_SHUTDOWN;
-    server->Terminate();
-    server->WaitForTermination();
-    server.reset();
+    // server->Terminate();
+    // server->WaitForTermination();
+    // server.reset();
+    server->StopServer();
     SPDLOG_INFO("Shutdown HTTP server");
     state = ModuleState::SHUTDOWN;
 }

@@ -26,7 +26,7 @@
 namespace ovms {
 class Server;
 
-using http_server = tensorflow::serving::net_http::HTTPServerInterface;
+using http_server = ovms::HttpServer;
 
 /**
  * @brief Creates a and starts Http Server
