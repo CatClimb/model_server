@@ -189,7 +189,7 @@ private:
 //     StatusCode getCode() const;
 // };
 
-const net_http2::HTTPStatusCode http(const ovms::Status& status);
+const HTTPStatusCode http(const ovms::Status& status);
 
 /**
  * @brief Creates a and starts Http Server
