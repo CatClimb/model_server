@@ -20,7 +20,7 @@ ARG PKG_IMAGE=pkg
 
 FROM $BASE_IMAGE as base_build
 LABEL version="1.0.0"
-
+USER root
 SHELL ["/bin/bash", "-xo", "pipefail", "-c"]
 
 ARG JOBS=8

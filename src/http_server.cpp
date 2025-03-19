@@ -33,310 +33,373 @@
 #include "tensorflow_serving/util/threadpool_executor.h"
 #pragma GCC diagnostic pop
 
-#include "http_rest_api_handler.hpp"
-#include "status.hpp"
-
-
-
+#include <atomic>
+#include <condition_variable>
+#include <cstring>
 #include <iostream>
+#include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
-#include <vector>
-#include <sstream>
 #include <unordered_map>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
+#include <vector>
+
 #include <arpa/inet.h>
-#include <cstring>
-#include <atomic>
-#include <mutex>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
-
+#include "http_rest_api_handler.hpp"
+#include "status.hpp"
 
 namespace ovms {
 
 namespace net_http2 = ovms;
-class ThreadPool { /* 使用之前的 NativeThreadPool 实现 */ };
-
-
-
-
-//================== HTTP 核心组件 ==================
-
-// HTTP 请求结构体
-struct HttpRequest {
-    std::string method;
-    std::string path;
-    std::string version;
-    std::unordered_map<std::string, std::string> headers;
-    std::string body;
-    std::string get_header_value( const std::string& key) {
-         // 安全校验：确保req非空
-    
-        auto it =headers.find(key);       // 查找键
-        if (it != headers.end()) {         // 存在则返回值
-            return it->second;
-        } else {                                // 不存在则返回空字符串
-            return "";
-        }
-    }
-    void OverwriteResponseHeader(HttpResponse* res, const std::string& key, const std::string& value) {
-        if (!res) return; // 空指针检查
-        
-        // 使用 map 的 insert 或 assign 特性覆盖值
-        if (auto it = res->headers.find(key); it != res->headers.end()) {
-            it->second = value; // 存在则覆盖
-        } else {
-            res->headers.emplace(key, value); // 不存在则插入
-        }
-    }
+class ThreadPool { /* 使用之前的 NativeThreadPool 实现 */
 };
 
-// HTTP 响应结构体
-struct HttpResponse {
-    std::string version = "HTTP/1.1";
-    int status_code = 200;
-    std::string status_text = "OK";
-    std::unordered_map<std::string, std::string> headers;
-    std::string body;
-
-    std::unordered_map<std::string, std::string> ConvertVectorToMap(
-        const std::vector<std::pair<std::string, std::string>>& headers_vec) {
-        
-        std::unordered_map<std::string, std::string> headers_map;
-        for (const auto& [key, value] : headers_vec) {  // C++17 结构化绑定
-            headers_map.insert_or_assign(key, value);   // 避免重复构造临时对象
-        }
-        return headers_map;
-    }
-};
-
-class HttpServer {
+class RestApiRequestDispatcher {
 public:
-    static HttpServer* CreateHTTPServer(const std::string& address, uint16_t port, int num_threads = 4) {
-        return new HttpServer(address, port, num_threads);
+    RestApiRequestDispatcher(ovms::Server& ovmsServer, int timeout_in_ms) {
+        handler_ = std::make_unique<HttpRestApiHandler>(ovmsServer, timeout_in_ms);
     }
 
-    void RegisterRequestDispatcher(RestApiRequestDispatcher* dispatcher) {
-        m_dispatcher = dispatcher;
-    }
-    void StartAcceptingRequests() {
-        start_server();
-    }
-    // 在其他公共方法之后添加
-    void StopServer() {
-        {
-            std::lock_guard<std::mutex> lock(m_server_fd_mutex);
-            if (!m_running) return;
-            
-            // Step 1: 设置停止标志位
-            m_running = false;
-            
-            // Step 2: 关闭服务器套接字（触发accept解除阻塞）
-            if (m_server_fd != -1) {
-                shutdown(m_server_fd, SHUT_RDWR);
-                close(m_server_fd);
-                m_server_fd = -1;
-            }
-        }
+    HttpResponse dispatch(net_http2::HttpRequest* req) {
+        // return [this](net_http2::HttpRequest* req) {
+        //     try {
+        //         this->processRequest(req);
+        //     } catch (...) {
+        //         SPDLOG_DEBUG("Exception caught in REST request handler");
+        //         // req->ReplyWithStatus(net_http2::HTTPStatusCode2::ERROR);
+        //     }
+        // };
 
-        // Step 3: 唤醒所有工作线程
-        m_cv.notify_all();
-        
-        // Step 4: 等待线程结束
-        for (auto& t : m_workers) {
-            if (t.joinable()) {
-                t.join();
-            }
+        try {
+            return this->processRequest(req);
+        } catch (...) {
+            SPDLOG_DEBUG("Exception caught in REST request handler");
+            // req->ReplyWithStatus(net_http2::HTTPStatusCode2::ERROR);
         }
-    }
-    ~HttpServer() {
-        close(m_server_fd);
-    }
+    };
 
 private:
-    HttpServer(const std::string& address, uint16_t port, int num_threads)
-        : m_address(address), m_port(port), m_num_threads(num_threads) {}
+    void parseHeaders(net_http2::HttpRequest* req, std::vector<std::pair<std::string, std::string>>* headers) {
 
-    void start_server() {
-        // 创建 socket
-        m_server_fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (m_server_fd < 0) {
-            perror("socket creation failed");
-            exit(EXIT_FAILURE);
+        if (req->get_header_value("Inference-Header-Content-Length").size() > 0) {
+            std::pair<std::string, std::string> header{"Inference-Header-Content-Length", req->get_header_value("Inference-Header-Content-Length")};
+            headers->emplace_back(header);
         }
+    }
+    HttpResponse processRequest(net_http2::HttpRequest* req) {
+        net_http2::HttpResponse res;
+        SPDLOG_DEBUG("REST request {}", req->path);
+        std::string body;
+        int64_t num_bytes = 0;
+        // auto request_chunk = req->ReadRequestBytes(&num_bytes);
+        body = req->body;
+        // while (request_chunk != nullptr) {
+        //     body.append(std::string_view(request_chunk.get(), num_bytes));
+        //     request_chunk = req->ReadRequestBytes(&num_bytes);
+        // }
 
-        // 配置地址
-        struct sockaddr_in server_addr;
-        std::memset(&server_addr, 0, sizeof(server_addr));
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(m_port);
-        inet_pton(AF_INET, m_address.c_str(), &server_addr.sin_addr);
-
-        // 绑定地址
-        int opt = 1;
-        setsockopt(m_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        if (bind(m_server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-            perror("bind failed");
-            exit(EXIT_FAILURE);
+        std::vector<std::pair<std::string, std::string>> headers;
+        parseHeaders(req, &headers);
+        std::string output;
+        SPDLOG_DEBUG("Processing HTTP request: {} {} body: {} bytes",
+            // req->http_method(),
+            req->method,
+            // req->uri_path(),
+            req->path,
+            body.size());
+        HttpResponseComponents responseComponents;
+        const auto status = handler_->processRequest(req->method, req->path, body, &headers, &output, responseComponents);
+        if (!status.ok() && output.empty()) {
+            output.append("{\"error\": \"" + status.string() + "\"}");
         }
-
-        // 开始监听
-        if (listen(m_server_fd, SOMAXCONN) < 0) {
-            perror("listen failed");
-            exit(EXIT_FAILURE);
+        const auto http_status = http(status);
+        if (responseComponents.inferenceHeaderContentLength.has_value()) {
+            std::pair<std::string, std::string> header{"Inference-Header-Content-Length", std::to_string(responseComponents.inferenceHeaderContentLength.value())};
+            headers.emplace_back(header);
         }
-
-        std::cout << "Server started on " << m_address << ":" << m_port << std::endl;
-
-        // 创建工作者线程
-        for (int i = 0; i < m_num_threads; ++i) {
-            m_workers.emplace_back([this] { accept_connections(); });
+        for (const auto& kv : headers) {
+            req->OverwriteResponseHeader(kv.first, kv.second);
         }
+        res.headers = res.ConvertVectorToMap(headers);
+        res.body = output;
+        return res;
+        // req->WriteResponseString(output);
+        // if (http_status != net_http2::HTTPStatusCode2::OK && http_status != net_http2::HTTPStatusCode2::CREATED) {
+        //     SPDLOG_DEBUG("Processing HTTP/REST request failed: {} {}. Reason: {}",
+        //         req->method,
+        //         req->path,
+        //         status.string());
+        // }
+        // req->ReplyWithStatus(http_status);
+    }
 
-        // 等待所有线程完成
-        for (auto& t : m_workers) {
+    std::unique_ptr<HttpRestApiHandler> handler_;
+};
+
+//================== HTTP 核心组件 ==================
+// HTTP 响应结构体
+
+std::unordered_map<std::string, std::string> HttpResponse::ConvertVectorToMap(
+    const std::vector<std::pair<std::string, std::string>>& headers_vec) {
+
+    std::unordered_map<std::string, std::string> headers_map;
+    for (const auto& [key, value] : headers_vec) {  // C++17 结构化绑定
+        headers_map.insert_or_assign(key, value);   // 避免重复构造临时对象
+    }
+    return headers_map;
+}
+// HTTP 请求结构体
+std::string HttpRequest::get_header_value(const std::string& key) const {
+    // 安全校验：确保req非空
+
+    auto it = headers.find(key);  // 查找键
+    if (it != headers.end()) {    // 存在则返回值
+        return it->second;
+    } else {  // 不存在则返回空字符串
+        return "";
+    }
+}
+void HttpRequest::OverwriteResponseHeader(HttpResponse* res, const std::string& key, const std::string& value) {
+    if (!res)
+        return;  // 空指针检查
+
+    // 使用 map 的 insert 或 assign 特性覆盖值
+    if (auto it = res->headers.find(key); it != res->headers.end()) {
+        it->second = value;  // 存在则覆盖
+    } else {
+        res->headers.emplace(key, value);  // 不存在则插入
+    }
+}
+
+HttpServer* HttpServer::CreateHTTPServer(const std::string& address, uint16_t port, int num_threads) {
+    return new HttpServer(address, port, num_threads);
+}
+
+void HttpServer::RegisterRequestDispatcher(RestApiRequestDispatcher* dispatcher) {
+    m_dispatcher = dispatcher;
+}
+void HttpServer::StartAcceptingRequests() {
+    start_server();
+}
+// 在其他公共方法之后添加
+void HttpServer::StopServer() {
+    {
+        std::lock_guard<std::mutex> lock(m_server_fd_mutex);
+        if (!m_running)
+            return;
+
+        // Step 1: 设置停止标志位
+        m_running = false;
+
+        // Step 2: 关闭服务器套接字（触发accept解除阻塞）
+        if (m_server_fd != -1) {
+            shutdown(m_server_fd, SHUT_RDWR);
+            close(m_server_fd);
+            m_server_fd = -1;
+        }
+    }
+
+    // Step 3: 唤醒所有工作线程
+    m_cv.notify_all();
+
+    // Step 4: 等待线程结束
+    for (auto& t : m_workers) {
+        if (t.joinable()) {
             t.join();
         }
     }
+}
+HttpServer::~HttpServer() {
+    close(m_server_fd);
+}
 
-    void accept_connections() {
-        while (true) {
-            struct sockaddr_in client_addr;
-            socklen_t client_len = sizeof(client_addr);
-            int client_fd = accept(m_server_fd, (struct sockaddr*)&client_addr, &client_len);
-            
-            if (client_fd < 0) {
-                perror("accept failed");
-                continue;
-            }
+HttpServer::HttpServer(const std::string& address, uint16_t port, int num_threads) :
+    m_address(address), m_port(port), m_num_threads(num_threads) {}
 
-            handle_connection(client_fd);
+void HttpServer::start_server() {
+    // 创建 socket
+    m_server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (m_server_fd < 0) {
+        perror("socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // 配置地址
+    struct sockaddr_in server_addr;
+    std::memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(m_port);
+    inet_pton(AF_INET, m_address.c_str(), &server_addr.sin_addr);
+
+    // 绑定地址
+    int opt = 1;
+    setsockopt(m_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (bind(m_server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        perror("bind failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // 开始监听
+    if (listen(m_server_fd, SOMAXCONN) < 0) {
+        perror("listen failed");
+        exit(EXIT_FAILURE);
+    }
+
+    std::cout << "Server started on " << m_address << ":" << m_port << std::endl;
+
+    // 创建工作者线程
+    for (int i = 0; i < m_num_threads; ++i) {
+        m_workers.emplace_back([this] { accept_connections(); });
+    }
+
+    // 等待所有线程完成
+    for (auto& t : m_workers) {
+        t.join();
+    }
+}
+
+void HttpServer::accept_connections() {
+    while (true) {
+        struct sockaddr_in client_addr;
+        socklen_t client_len = sizeof(client_addr);
+        int client_fd = accept(m_server_fd, (struct sockaddr*)&client_addr, &client_len);
+
+        if (client_fd < 0) {
+            perror("accept failed");
+            continue;
+        }
+
+        handle_connection(client_fd);
+    }
+}
+
+void HttpServer::handle_connection(int client_fd) {
+    char buffer[4096] = {0};
+    ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
+
+    if (bytes_read > 0) {
+        HttpRequest req = parse_request(std::string(buffer, bytes_read));
+        HttpResponse res =->dispatch(req);
+        std::cout << "Server started on发送前 " << std::endl;
+
+        std::string response_str = build_response(res);
+        send(client_fd, response_str.c_str(), response_str.size(), 0);
+        std::cout << "Server started on发送后 " << std::endl;
+    }
+
+    close(client_fd);
+}
+
+HttpRequest HttpServer::parse_request(const std::string& raw_request) {
+    HttpRequest req;
+    std::istringstream stream(raw_request);
+    std::string line;
+
+    // 解析请求行
+    if (std::getline(stream, line)) {
+        std::istringstream line_stream(line);
+        line_stream >> req.method >> req.path >> req.version;
+    }
+
+    // 处理转义字符
+    req.path = url_decode(req.path);
+
+    // 解析请求头
+    while (std::getline(stream, line) && line != "\r") {
+        size_t colon_pos = line.find(':');
+        if (colon_pos != std::string::npos) {
+            std::string key = line.substr(0, colon_pos);
+            std::string value = line.substr(colon_pos + 2, line.size() - colon_pos - 3);
+            req.headers[key] = value;
         }
     }
 
-    void handle_connection(int client_fd) {
-        char buffer[4096] = {0};
-        ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
-        
-        if (bytes_read > 0) {
-            HttpRequest req = parse_request(std::string(buffer, bytes_read));
-            HttpResponse res = m_dispatcher->dispatch(req);
-            std::cout << "Server started on发送前 " << std::endl;
-
-            std::string response_str = build_response(res);
-            send(client_fd, response_str.c_str(), response_str.size(), 0);
-            std::cout << "Server started on发送后 " << std::endl;
-        }
-
-        close(client_fd);
+    // 解析请求体（简化处理）
+    size_t body_pos = raw_request.find("\r\n\r\n");
+    if (body_pos != std::string::npos) {
+        req.body = raw_request.substr(body_pos + 4);
     }
 
-    HttpRequest parse_request(const std::string& raw_request) {
-        HttpRequest req;
-        std::istringstream stream(raw_request);
-        std::string line;
+    return req;
+}
 
-        // 解析请求行
-        if (std::getline(stream, line)) {
-            std::istringstream line_stream(line);
-            line_stream >> req.method >> req.path >> req.version;
-        }
-
-        // 处理转义字符
-        req.path = url_decode(req.path);
-
-        // 解析请求头
-        while (std::getline(stream, line) && line != "\r") {
-            size_t colon_pos = line.find(':');
-            if (colon_pos != std::string::npos) {
-                std::string key = line.substr(0, colon_pos);
-                std::string value = line.substr(colon_pos + 2, line.size() - colon_pos - 3);
-                req.headers[key] = value;
-            }
-        }
-
-        // 解析请求体（简化处理）
-        size_t body_pos = raw_request.find("\r\n\r\n");
-        if (body_pos != std::string::npos) {
-            req.body = raw_request.substr(body_pos + 4);
-        }
-
-        return req;
-    }
-
-    std::string url_decode(const std::string &str) {
-        std::string result;
-        result.reserve(str.size());
-        for (size_t i = 0; i < str.size(); ++i) {
-            if (str[i] == '%') {
-                if (i + 2 < str.size()) {
-                    int value;
-                    std::istringstream hex_stream(str.substr(i + 1, 2));
-                    if (hex_stream >> std::hex >> value) {
-                        result += static_cast<char>(value);
-                        i += 2;
-                    }
+std::string HttpServer::url_decode(const std::string& str) {
+    std::string result;
+    result.reserve(str.size());
+    for (size_t i = 0; i < str.size(); ++i) {
+        if (str[i] == '%') {
+            if (i + 2 < str.size()) {
+                int value;
+                std::istringstream hex_stream(str.substr(i + 1, 2));
+                if (hex_stream >> std::hex >> value) {
+                    result += static_cast<char>(value);
+                    i += 2;
                 }
-            } else if (str[i] == '+') {
-                result += ' ';
-            } else {
-                result += str[i];
             }
+        } else if (str[i] == '+') {
+            result += ' ';
+        } else {
+            result += str[i];
         }
-        return result;
+    }
+    return result;
+}
+
+std::string HttpServer::build_response(const HttpResponse& res) {
+    std::ostringstream stream;
+    stream << res.version << " "
+           << res.status_code << " "
+           << res.status_text << "\r\n";
+
+    for (const auto& [key, value] : res.headers) {
+        stream << key << ": " << value << "\r\n";
     }
 
-    std::string build_response(const HttpResponse& res) {
-        std::ostringstream stream;
-        stream << res.version << " " 
-               << res.status_code << " " 
-               << res.status_text << "\r\n";
-        
-        for (const auto& [key, value] : res.headers) {
-            stream << key << ": " << value << "\r\n";
-        }
-        
-        stream << "Content-Length: " << res.body.size() << "\r\n\r\n";
-        stream << res.body;
-        return stream.str();
-    }
+    stream << "Content-Length: " << res.body.size() << "\r\n\r\n";
+    stream << res.body;
+    return stream.str();
+}
 
-    int m_server_fd;
-    std::string m_address;
-    uint16_t m_port;
-    int m_num_threads;
-    std::vector<std::thread> m_workers;
-    RestApiRequestDispatcher* m_dispatcher;
-    std::atomic<bool> m_running{false};  
-    std::mutex m_server_fd_mutex;  
-    std::condition_variable m_cv;      
-};
 //============= 使用示例 =============
 // int main() {
 //     auto server = HttpServer::CreateHTTPServer("192.168.3.101", 8080, 4);
-    
+
 //     // 注册路由处理器
-//     server->GetRouter().Register("GET", "/", 
+//     server->GetRouter().Register("GET", "/",
 //         [](const HttpRequest&, HttpResponse& res) {
 //             res.content = "<h1>Welcome to Native C++ Server</h1>";
 //         });
-    
-//     server->GetRouter().Register("GET", "/hello", 
+
+//     server->GetRouter().Register("GET", "/hello",
 //         [](const HttpRequest&, HttpResponse& res) {
 //             res.content = "<h1>Hello from C++17</h1>";
 //         });
 
 //     server->Start();
-    
+
 //     // 等待退出（实际应用中可以添加信号处理）
 //     while(true) std::this_thread::sleep_for(std::chrono::seconds(1));
-    
+
 //     server->Stop();
 //     return 0;
 // }
-static const net_http2::HTTPStatusCode2 http(const ovms::Status& status) {
+
+
+    // 构造函数，用于初始化状态码
+    Status::Status(StatusCode c) :
+        code(c) {}
+
+    // 获取状态码的方法
+    StatusCode Status::getCode() const {
+        return code;
+    }
+};
+
+const net_http2::HTTPStatusCode2 http(const ovms::Status& status) {
     const std::unordered_map<const StatusCode, net_http2::HTTPStatusCode2> httpStatusMap = {
         {StatusCode::OK, net_http2::HTTPStatusCode2::OK},
         {StatusCode::OK_RELOADED, net_http2::HTTPStatusCode2::CREATED},
@@ -421,7 +484,7 @@ static const net_http2::HTTPStatusCode2 http(const ovms::Status& status) {
         {StatusCode::UNSUPPORTED_LAYOUT, net_http2::HTTPStatusCode2::BAD_REQUEST},
 
         // Deserialization
-f
+        f
         // Should never occur - ModelInstance::validate takes care of that
         {StatusCode::OV_UNSUPPORTED_DESERIALIZATION_PRECISION, net_http2::HTTPStatusCode2::ERROR},
         {StatusCode::OV_INTERNAL_DESERIALIZATION_ERROR, net_http2::HTTPStatusCode2::ERROR},
@@ -451,7 +514,6 @@ f
     }
 }
 
-
 // class RequestExecutor final : public net_http::EventExecutor {
 // public:
 //     explicit RequestExecutor(int num_threads) :
@@ -463,95 +525,12 @@ f
 //     tensorflow::serving::ThreadPoolExecutor executor_;
 // };
 
-class RestApiRequestDispatcher {
-public:
-    RestApiRequestDispatcher(ovms::Server& ovmsServer, int timeout_in_ms) {
-        handler_ = std::make_unique<HttpRestApiHandler>(ovmsServer, timeout_in_ms);
-    }
-
-    HttpResponse dispatch(net_http2::HttpRequest* req) {
-        // return [this](net_http2::HttpRequest* req) {
-        //     try {
-        //         this->processRequest(req);
-        //     } catch (...) {
-        //         SPDLOG_DEBUG("Exception caught in REST request handler");
-        //         // req->ReplyWithStatus(net_http2::HTTPStatusCode2::ERROR);
-        //     }
-        // };
-         
-            try {
-                return   this->processRequest(req);
-            } catch (...) {
-                SPDLOG_DEBUG("Exception caught in REST request handler");
-                // req->ReplyWithStatus(net_http2::HTTPStatusCode2::ERROR);
-            }
-        };
-    }
-
-private:
-    void parseHeaders(const net_http2::HttpRequest* req, std::vector<std::pair<std::string, std::string>>* headers) {
-        
-        if (req->get_header_value("Inference-Header-Content-Length").size() > 0) {
-            std::pair<std::string, std::string> header{"Inference-Header-Content-Length", req->get_header_value("Inference-Header-Content-Length")};
-            headers->emplace_back(header);
-        }
-    }
-    void processRequest(net_http2::HttpRequest* req) {
-        net_http2::HttpResponse res;
-        SPDLOG_DEBUG("REST request {}", req->uri_path());
-        std::string body;
-        int64_t num_bytes = 0;
-        // auto request_chunk = req->ReadRequestBytes(&num_bytes);
-        body = req->body;
-        // while (request_chunk != nullptr) {
-        //     body.append(std::string_view(request_chunk.get(), num_bytes));
-        //     request_chunk = req->ReadRequestBytes(&num_bytes);
-        // }
-        
-        std::vector<std::pair<std::string, std::string>> headers;
-        parseHeaders(req, &headers);
-        std::string output;
-        SPDLOG_DEBUG("Processing HTTP request: {} {} body: {} bytes",
-            // req->http_method(),
-            req->method,
-            // req->uri_path(),
-            req->path,
-            body.size());
-        HttpResponseComponents responseComponents;
-        const auto status = handler_->processRequest(req->method, req->path, body, &headers, &output, responseComponents);
-        if (!status.ok() && output.empty()) {
-            output.append("{\"error\": \"" + status.string() + "\"}");
-        }
-        const auto http_status = http(status);
-        if (responseComponents.inferenceHeaderContentLength.has_value()) {
-            std::pair<std::string, std::string> header{"Inference-Header-Content-Length", std::to_string(responseComponents.inferenceHeaderContentLength.value())};
-            headers.emplace_back(header);
-        }
-        for (const auto& kv : headers) {
-            req->OverwriteResponseHeader(kv.first, kv.second);
-        }
-        res.headers=res.ConvertVectorToMap(headers);
-        res.body=output;
-        return res;
-        // req->WriteResponseString(output);
-        // if (http_status != net_http2::HTTPStatusCode2::OK && http_status != net_http2::HTTPStatusCode2::CREATED) {
-        //     SPDLOG_DEBUG("Processing HTTP/REST request failed: {} {}. Reason: {}",
-        //         req->method,
-        //         req->path,
-        //         status.string());
-        // }
-        // req->ReplyWithStatus(http_status);
-    }
-
-    std::unique_ptr<HttpRestApiHandler> handler_;
-};
-
-std::unique_ptr<http_server> createAndStartHttpServer(const std::string& address, int port, int num_threads, ovms::Server& ovmsServer, int timeout_in_ms) {
+std::unique_ptr<HttpServer> createAndStartHttpServer(const std::string& address, int port, int num_threads, ovms::Server& ovmsServer, int timeout_in_ms) {
     // auto options = std::make_unique<net_http::ServerOptions>();
     // options->AddPort(static_cast<uint32_t>(port));
     // options->SetAddress(address);
     // options->SetExecutor(std::make_unique<RequestExecutor>(num_threads));
-    auto server =HttpServer::CreateHTTPServer(address, static_cast<uint32_t>(port), num_threads);
+    auto server = HttpServer::CreateHTTPServer(address, static_cast<uint32_t>(port), num_threads);
     // auto server = net_http::CreateEvHTTPServer(std::move(options));
     if (server == nullptr) {
         SPDLOG_ERROR("Failed to create http server");
@@ -572,7 +551,7 @@ std::unique_ptr<http_server> createAndStartHttpServer(const std::string& address
     //     SPDLOG_INFO("REST server listening on port {} with {} threads", port, num_threads);
     //     return server;
     // }
-        if (server->StartAcceptingRequests()) {
+    if (server->StartAcceptingRequests()) {
         SPDLOG_INFO("REST server listening on port {} with {} threads", port, num_threads);
         return server;
     }

@@ -24,8 +24,9 @@
 namespace ovms {
 class Config;
 class Server;
+class HttpServer;
 class HTTPServerModule : public Module {
-    std::unique_ptr<ovms::http_server> server;
+    std::unique_ptr<HttpServer> server;
     Server& ovmsServer;
 
 public:
