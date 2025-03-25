@@ -69,10 +69,7 @@ public:
         //         // req->ReplyWithStatus(HTTPStatusCode2::ERROR);
         //     }
         // };
-
-        
             return this->processRequest(req);
-        
     };
 
 private:
@@ -266,7 +263,7 @@ void HttpServer::accept_connections() {
             perror("accept failed");
             continue;
         }
-
+        std::cout << "我接收到1请求 哈哈 " << std::endl;
         handle_connection(client_fd);
     }
 }
@@ -276,11 +273,16 @@ void HttpServer::handle_connection(int client_fd) {
     ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
 
     if (bytes_read > 0) {
+        std::cout << "请求转换前 " << std::endl;
         HttpRequest req = parse_request(std::string(buffer, bytes_read));
+        std::cout << "请求转换后 " << std::endl;
+        std::cout << "调用请求适配器处理器前 " << std::endl;
         HttpResponse res =m_dispatcher->dispatch(&req);
+        std::cout << "调用请求适配器处理器后 " << std::endl;
         std::cout << "Server started on发送前 " << std::endl;
-
+        
         std::string response_str = build_response(res);
+        std::cout << "打印下结果 哈哈： "<<response_str << std::endl;
         send(client_fd, response_str.c_str(), response_str.size(), 0);
         std::cout << "Server started on发送后 " << std::endl;
     }
@@ -522,34 +524,41 @@ std::unique_ptr<HttpServer> createAndStartHttpServer(const std::string& address,
     // options->AddPort(static_cast<uint32_t>(port));
     // options->SetAddress(address);
     // options->SetExecutor(std::make_unique<RequestExecutor>(num_threads));
+    std::cout <<  "服务器创建前" <<  std::endl;
     auto server = HttpServer::CreateHTTPServer(address, static_cast<uint32_t>(port), num_threads);
     // auto server = net_http::CreateEvHTTPServer(std::move(options));
     if (server == nullptr) {
         SPDLOG_ERROR("Failed to create http server");
         return nullptr;
     }
-
+    std::cout <<  "服务器创建后" <<  std::endl;
+    std::cout <<  "适配器创建前" <<  std::endl;
     std::shared_ptr<RestApiRequestDispatcher> dispatcher =
         std::make_shared<RestApiRequestDispatcher>(ovmsServer, timeout_in_ms);
-
+    std::cout <<  "适配器创建后" <<  std::endl;
     // net_http::RequestHandlerOptions handler_options;
     // server->RegisterRequestDispatcher(
     //     [dispatcher](net_http::ServerRequestInterface* req) {
     //         return dispatcher->dispatch(req);
     //     },
     //     handler_options);
+    std::cout <<  "适配器注册前" <<  std::endl;
     server->RegisterRequestDispatcher(dispatcher.get());
-    // if (server->StartAcceptingRequests()) {
-    //     SPDLOG_INFO("REST server listening on port {} with {} threads", port, num_threads);
-    //     return server;
-    // }
-
+    std::cout <<  "适配器注册后" <<  std::endl;
+    std::cout <<  "http服务开启前" <<  std::endl;
+    if (server->StartAcceptingRequests()) {
+        SPDLOG_INFO("REST server listening on port {} with {} threads", port, num_threads);
+        std::cout <<  "http服务开启后" <<  std::endl;
+        return std::unique_ptr<ovms::HttpServer>(server);
+    }
+    
+    std::cout <<  "http服务开启失败后" <<  std::endl;
     //// if (server->StartAcceptingRequests()) {
     ////     SPDLOG_INFO("REST server listening on port {} with {} threads", port, num_threads);
     ////     return *server;
     //// }
 
-    return std::unique_ptr<ovms::HttpServer>(server);
+    return nullptr;
     // return nullptr;
 }
 }  // namespace ovms
