@@ -434,6 +434,8 @@ Status HttpRestApiHandler::processMetrics(const HttpRequestComponents& request_c
     auto& metricConfig = this->modelManager.getMetricConfig();
 
     if (!metricConfig.metricsEnabled) {
+        std::cout <<  "在这里"  <<  std::endl;
+
         return StatusCode::REST_INVALID_URL;
     }
 
@@ -540,14 +542,18 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
         SPDLOG_DEBUG("Path {} escape with .. is forbidden.", request_path);
         return StatusCode::PATH_INVALID;
     }
+    std::cout <<  "请求方式：" << http_method <<  std::endl;
 
     if (http_method == "POST") {
         if (std::regex_match(request_path, sm, predictionRegex)) {
             requestComponents.type = Predict;
             requestComponents.model_name = sm[2];
-
             std::string model_version_str = sm[3];
+            std::cout <<  "POST内 model_version_str" << model_version_str <<  std::endl;
+            std::cout <<  "POST内 requestComponents.model_version" << requestComponents.model_version.value() <<  std::endl;
+
             auto status = parseModelVersion(model_version_str, requestComponents.model_version);
+            std::cout <<  "POST内 parseModelVersion" << status.string() <<  std::endl;
             if (!status.ok())
                 return status;
 
@@ -555,9 +561,8 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
             if (!model_version_label_str.empty()) {
                 requestComponents.model_version_label = model_version_label_str;
             }
-
             requestComponents.processing_method = sm[5];
-
+            std::cout <<  "POST内 第一个if" << status.string() <<  std::endl;
             return StatusCode::OK;
         }
         if (std::regex_match(request_path, sm, kfs_inferRegex, std::regex_constants::match_any)) {
@@ -567,7 +572,6 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
             auto status = parseModelVersion(model_version_str, requestComponents.model_version);
             if (!status.ok())
                 return status;
-
             status = parseInferenceHeaderContentLength(requestComponents, headers);
             if (!status.ok())
                 return status;
@@ -577,6 +581,17 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
             requestComponents.type = ConfigReload;
             return StatusCode::OK;
         }
+        std::cout <<  "正则表达式前1：" << request_path <<  std::endl;
+        std::cout <<  "正则表达式前2：" << std::regex_match(request_path, sm, modelstatusRegex) <<  std::endl;
+        std::cout <<  "正则表达式前3：" << std::regex_match(request_path, sm, kfs_serverliveRegex) <<  std::endl;
+        std::cout <<  "正则表达式前4：" << std::regex_match(request_path, sm, configStatusRegex) <<  std::endl;
+        std::cout <<  "正则表达式前5：" << std::regex_match(request_path, sm, kfs_serverreadyRegex) <<  std::endl;
+        std::cout <<  "正则表达式前6：" << std::regex_match(request_path, sm, kfs_servermetadataRegex) <<  std::endl;
+        std::cout <<  "正则表达式前7：" << std::regex_match(request_path, sm, kfs_modelmetadataRegex) <<  std::endl;
+        std::cout <<  "正则表达式前8：" << std::regex_match(request_path, sm, kfs_modelreadyRegex) <<  std::endl;
+        std::cout <<  "正则表达式前9：" << std::regex_match(request_path, sm, metricsRegex) <<  std::endl;
+
+
         return (std::regex_match(request_path, sm, modelstatusRegex) ||
                    std::regex_match(request_path, sm, kfs_serverliveRegex) ||
                    std::regex_match(request_path, sm, configStatusRegex) ||
@@ -589,6 +604,8 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
                    : StatusCode::REST_INVALID_URL;
 
     } else if (http_method == "GET") {
+        std::cout <<  "正则表达式前9：GET哦"  <<  std::endl;
+
         if (std::regex_match(request_path, sm, modelstatusRegex)) {
             requestComponents.model_name = sm[2];
             std::string model_version_str = sm[3];
@@ -653,12 +670,15 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
             requestComponents.type = Metrics;
             return StatusCode::OK;
         }
+        std::cout <<  "没匹配到我干2why？" << std::regex_match(request_path, sm, predictionRegex) <<  std::endl;
         return (std::regex_match(request_path, sm, predictionRegex) ||
                    std::regex_match(request_path, sm, kfs_inferRegex, std::regex_constants::match_any) ||
                    std::regex_match(request_path, sm, configReloadRegex))
                    ? StatusCode::REST_UNSUPPORTED_METHOD
                    : StatusCode::REST_INVALID_URL;
     }
+    std::cout <<  "没匹配到我干why？" << request_path <<  std::endl;
+
     return StatusCode::REST_INVALID_URL;
 }
 
@@ -676,10 +696,10 @@ Status HttpRestApiHandler::processRequest(
         SPDLOG_DEBUG("Path {} escape with .. is forbidden.", request_path);
         return StatusCode::PATH_INVALID;
     }
-
+    std::cout <<  "适配处理器内部转换前：" << request_path <<  std::endl;
     HttpRequestComponents requestComponents;
     auto status = parseRequestComponents(requestComponents, http_method, request_path_str, *headers);
-
+    std::cout <<  "适配处理器内部转换前：" << status.string() <<  std::endl;
     headers->clear();
     response->clear();
     headers->push_back({"Content-Type", "application/json"});
@@ -708,7 +728,7 @@ Status HttpRestApiHandler::processPredictRequest(
     Order requestOrder;
     tensorflow::serving::PredictResponse responseProto;
     Status status;
-
+    std::cout<<"我进来了"<< std::endl;
     ServableMetricReporter* reporterOut = nullptr;
     if (this->modelManager.modelExists(modelName)) {
         SPDLOG_DEBUG("Found model with name: {}. Searching for requested version...", modelName);

@@ -121,8 +121,9 @@ private:
             req->OverwriteResponseHeader(&res,kv.first, kv.second);
         }
         res.headers = res.ConvertVectorToMap(headers);
+        std::cout <<  "预测结果：" << output <<  std::endl;
         res.body = output;
-        std::cout <<  "预测结果：" << status.string() <<  std::endl;
+        std::cout <<  "预测结果状态：" << status.string() <<  std::endl;
         return res;
         // req->WriteResponseString(output);
         // if (http_status != HTTPStatusCode2::OK && http_status != HTTPStatusCode2::CREATED) {
@@ -249,7 +250,7 @@ void HttpServer::start_server() {
     }
     // 等待所有线程完成
     for (auto& t : m_workers) {
-        t.join();
+        t.detach();
     }
 }
 
@@ -269,13 +270,21 @@ void HttpServer::accept_connections() {
 }
 
 void HttpServer::handle_connection(int client_fd) {
-    char buffer[4096] = {0};
-    ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
-
-    if (bytes_read > 0) {
+    // char buffer[4096] = {0};
+    char buffer[4096];
+    std::string request_str;
+    ssize_t bytes_read;
+    // ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
+    while ((bytes_read = read(client_fd, buffer, sizeof(buffer))) > 0) {
+        request_str.append(buffer, bytes_read);
+        // 可以在这里进行部分解析处理
+    }
+    // if (bytes_read > 0) {
+    if (!request_str.empty()) {
         std::cout << "请求转换前 " << std::endl;
-        HttpRequest req = parse_request(std::string(buffer, bytes_read));
-        std::cout << "请求转换后 " << std::endl;
+        HttpRequest req = parse_request(request_str);
+        std::cout << "请求转换后path " <<req.path <<std::endl;
+        std::cout << "请求转换后version " <<req.version <<std::endl;
         std::cout << "调用请求适配器处理器前 " << std::endl;
         HttpResponse res =m_dispatcher->dispatch(&req);
         std::cout << "调用请求适配器处理器后 " << std::endl;
@@ -546,11 +555,11 @@ std::unique_ptr<HttpServer> createAndStartHttpServer(const std::string& address,
     server->RegisterRequestDispatcher(dispatcher.get());
     std::cout <<  "适配器注册后" <<  std::endl;
     std::cout <<  "http服务开启前" <<  std::endl;
-    if (server->StartAcceptingRequests()) {
+    server->StartAcceptingRequests();
         SPDLOG_INFO("REST server listening on port {} with {} threads", port, num_threads);
         std::cout <<  "http服务开启后" <<  std::endl;
         return std::unique_ptr<ovms::HttpServer>(server);
-    }
+    
     
     std::cout <<  "http服务开启失败后" <<  std::endl;
     //// if (server->StartAcceptingRequests()) {
@@ -558,7 +567,7 @@ std::unique_ptr<HttpServer> createAndStartHttpServer(const std::string& address,
     ////     return *server;
     //// }
 
-    return nullptr;
+    // return nullptr;
     // return nullptr;
 }
 }  // namespace ovms
