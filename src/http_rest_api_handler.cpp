@@ -545,13 +545,34 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
     std::cout <<  "请求方式：" << http_method <<  std::endl;
 
     if (http_method == "POST") {
-        if (std::regex_match(request_path, sm, predictionRegex)) {
+        //适配 预测请求处理器
+        std::cout <<  "request_path" << request_path <<  std::endl;
+        if(sm.empty()){
+            std::cout << "之前sm 为空。" << std::endl;
+        }else{
+            std::cout << "之前sm 的大小为: " << sm.size() << std::endl;
+            for (size_t i = 0; i < sm.size(); ++i) {
+                std::cout << "前第 " << i << " 个匹配结果: " << sm[i].str() << std::endl;
+            }
+        }
+        std::string a=R"((.?)\/v1\/models\/([^\/:]+)(?:(?:\/versions\/(\d+))|(?:\/labels\/(\w+)))?:(classify|regress|predict))";
+        const std::regex predictionRegex2(a);
+       
+        std::regex_match(request_path, sm, predictionRegex2);
+        if(sm.empty()){
+            std::cout << "之后sm 为空。" << std::endl;
+        }else{
+            std::cout << "之后sm 的大小为: " << sm.size() << std::endl;
+            for (size_t i = 0; i < sm.size(); ++i) {
+                std::cout << "后第 " << i << " 个匹配结果: " << sm[i].str() << std::endl;
+            }
+        }
+
             requestComponents.type = Predict;
             requestComponents.model_name = sm[2];
             std::string model_version_str = sm[3];
             std::cout <<  "POST内 model_version_str" << model_version_str <<  std::endl;
-            std::cout <<  "POST内 requestComponents.model_version" << requestComponents.model_version.value() <<  std::endl;
-
+            std::cout <<  "POST内 model_version_str123" << model_version_str <<  std::endl;
             auto status = parseModelVersion(model_version_str, requestComponents.model_version);
             std::cout <<  "POST内 parseModelVersion" << status.string() <<  std::endl;
             if (!status.ok())
@@ -564,7 +585,7 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
             requestComponents.processing_method = sm[5];
             std::cout <<  "POST内 第一个if" << status.string() <<  std::endl;
             return StatusCode::OK;
-        }
+        
         if (std::regex_match(request_path, sm, kfs_inferRegex, std::regex_constants::match_any)) {
             requestComponents.type = KFS_Infer;
             requestComponents.model_name = sm[1];
@@ -689,7 +710,7 @@ Status HttpRestApiHandler::processRequest(
     std::vector<std::pair<std::string, std::string>>* headers,
     std::string* response,
     HttpResponseComponents& responseComponents) {
-
+        return StatusCode::OK;
     std::smatch sm;
     std::string request_path_str(request_path);
     if (FileSystem::isPathEscaped(request_path_str)) {
