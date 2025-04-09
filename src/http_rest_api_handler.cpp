@@ -135,6 +135,7 @@ Status HttpRestApiHandler::parseModelVersion(std::string& model_version_str, std
 
 void HttpRestApiHandler::registerHandler(RequestType type, std::function<Status(const HttpRequestComponents&, std::string&, const std::string&, HttpResponseComponents&)> f) {
     handlers[type] = f;
+    
 }
 
 void HttpRestApiHandler::registerAll() {
@@ -147,7 +148,13 @@ void HttpRestApiHandler::registerAll() {
             return StatusCode::REST_NOT_FOUND;
         }
     });
+    auto handler = handlers.find(Predict);
+    if (handler != handlers.end()) {
+        std::cout <<  "找到了呀"  <<  std::endl;
+    }else{
+        std::cout <<  "没找到"  <<  std::endl;
 
+    }
     registerHandler(GetModelMetadata, [this](const HttpRequestComponents& request_components, std::string& response, const std::string& request_body, HttpResponseComponents& response_components) {
         return processModelMetadataRequest(request_components.model_name, request_components.model_version,
             request_components.model_version_label, &response);
