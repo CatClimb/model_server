@@ -140,10 +140,14 @@ void HttpRestApiHandler::registerHandler(RequestType type, std::function<Status(
 
 void HttpRestApiHandler::registerAll() {
     registerHandler(Predict, [this](const HttpRequestComponents& request_components, std::string& response, const std::string& request_body, HttpResponseComponents& response_components) -> Status {
+        std::cout <<  "niming1:" <<  std::endl;
+
         if (request_components.processing_method == "predict") {
+            std::cout <<  "niming2:" <<  std::endl;
             return processPredictRequest(request_components.model_name, request_components.model_version,
                 request_components.model_version_label, request_body, &response);
         } else {
+            std::cout <<  "niming3:" <<  std::endl;
             SPDLOG_DEBUG("Requested REST resource not found");
             return StatusCode::REST_NOT_FOUND;
         }
@@ -153,7 +157,6 @@ void HttpRestApiHandler::registerAll() {
         std::cout <<  "找到了呀"  <<  std::endl;
     }else{
         std::cout <<  "没找到"  <<  std::endl;
-
     }
     registerHandler(GetModelMetadata, [this](const HttpRequestComponents& request_components, std::string& response, const std::string& request_body, HttpResponseComponents& response_components) {
         return processModelMetadataRequest(request_components.model_name, request_components.model_version,
@@ -422,13 +425,19 @@ Status HttpRestApiHandler::dispatchToProcessor(
     std::string* response,
     const HttpRequestComponents& request_components,
     HttpResponseComponents& response_components) {
-
+    std::cout <<"<request_components.type:"<<request_components.type << std::endl;
     auto handler = handlers.find(request_components.type);
+    std::cout <<  "dispatchToProcessor1:" <<  std::endl;
     if (handler != handlers.end()) {
+        std::cout <<  "dispatchToProcessor2:" <<  std::endl;
         return handler->second(request_components, *response, request_body, response_components);
     } else {
+        std::cout <<  "dispatchToProcessor3:" <<  std::endl;
+
         return StatusCode::UNKNOWN_REQUEST_COMPONENTS_TYPE;
     }
+    std::cout <<  "dispatchToProcessor4:" <<  std::endl;
+
     return StatusCode::UNKNOWN_REQUEST_COMPONENTS_TYPE;
 }
 
@@ -564,17 +573,16 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
         }
         std::string a=R"((.?)\/v1\/models\/([^\/:]+)(?:(?:\/versions\/(\d+))|(?:\/labels\/(\w+)))?:(classify|regress|predict))";
         const std::regex predictionRegex2(a);
-       
-        std::regex_match(request_path, sm, predictionRegex2);
-        if(sm.empty()){
-            std::cout << "之后sm 为空。" << std::endl;
-        }else{
-            std::cout << "之后sm 的大小为: " << sm.size() << std::endl;
-            for (size_t i = 0; i < sm.size(); ++i) {
-                std::cout << "后第 " << i << " 个匹配结果: " << sm[i].str() << std::endl;
+        if (std::regex_match(request_path, sm, predictionRegex2)) {
+            std::cout << "匹配成功" << std::endl;
+            if(sm.empty()){
+                std::cout << "之后sm 为空。" << std::endl;
+            }else{
+                std::cout << "之后sm 的大小为: " << sm.size() << std::endl;
+                for (size_t i = 0; i < sm.size(); ++i) {
+                    std::cout << "后第 " << i << " 个匹配结果: " << sm[i].str() << std::endl;
+                }
             }
-        }
-
             requestComponents.type = Predict;
             requestComponents.model_name = sm[2];
             std::string model_version_str = sm[3];
@@ -582,6 +590,7 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
             std::cout <<  "POST内 model_version_str123" << model_version_str <<  std::endl;
             auto status = parseModelVersion(model_version_str, requestComponents.model_version);
             std::cout <<  "POST内 parseModelVersion" << status.string() <<  std::endl;
+
             if (!status.ok())
                 return status;
 
@@ -589,10 +598,10 @@ Status HttpRestApiHandler::parseRequestComponents(HttpRequestComponents& request
             if (!model_version_label_str.empty()) {
                 requestComponents.model_version_label = model_version_label_str;
             }
-            requestComponents.processing_method = sm[5];
             std::cout <<  "POST内 第一个if" << status.string() <<  std::endl;
+            requestComponents.processing_method = sm[5];
             return StatusCode::OK;
-        
+        } 
         if (std::regex_match(request_path, sm, kfs_inferRegex, std::regex_constants::match_any)) {
             requestComponents.type = KFS_Infer;
             requestComponents.model_name = sm[1];
@@ -717,7 +726,6 @@ Status HttpRestApiHandler::processRequest(
     std::vector<std::pair<std::string, std::string>>* headers,
     std::string* response,
     HttpResponseComponents& responseComponents) {
-        return StatusCode::OK;
     std::smatch sm;
     std::string request_path_str(request_path);
     if (FileSystem::isPathEscaped(request_path_str)) {
@@ -727,7 +735,7 @@ Status HttpRestApiHandler::processRequest(
     std::cout <<  "适配处理器内部转换前：" << request_path <<  std::endl;
     HttpRequestComponents requestComponents;
     auto status = parseRequestComponents(requestComponents, http_method, request_path_str, *headers);
-    std::cout <<  "适配处理器内部转换前：" << status.string() <<  std::endl;
+    std::cout <<  "适配处理器内部转换后：" << status.string() <<  std::endl;
     headers->clear();
     response->clear();
     headers->push_back({"Content-Type", "application/json"});
@@ -744,14 +752,16 @@ Status HttpRestApiHandler::processPredictRequest(
     const std::string& request,
     std::string* response) {
     // model_version_label currently is not in use
-
+    std::cout <<  "处理器进来1:" <<  std::endl;
     Timer<TIMER_END> timer;
     timer.start(TOTAL);
     using std::chrono::microseconds;
-
+    std::cout <<  "处理器进来2:" <<  std::endl;
     std::string modelVersionLog = modelVersion.has_value() ? std::to_string(modelVersion.value()) : DEFAULT_VERSION;
+    std::cout <<  "处理器进来3:" <<  std::endl;
     SPDLOG_DEBUG("Processing REST request for model: {}; version: {}",
         modelName, modelVersionLog);
+    std::cout <<  "处理器进来4:" <<  std::endl;
 
     Order requestOrder;
     tensorflow::serving::PredictResponse responseProto;
