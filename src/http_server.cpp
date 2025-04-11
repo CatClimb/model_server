@@ -69,6 +69,7 @@ public:
         //         // req->ReplyWithStatus(HTTPStatusCode2::ERROR);
         //     }
         // };
+        net_http2::HttpResponse res;
         try {
             // 这里可能抛出任何类型的异常
             return this->processRequest(req);
@@ -80,9 +81,12 @@ public:
                 }
             } catch (const std::exception& e) {
                 std::cout << "Caught exception: " << e.what() << std::endl;
+                return res;
             } catch (...) {
                 std::cout << "Caught an unknown exception." << std::endl;
+                return res;
             }
+            return res;
         }
         
             

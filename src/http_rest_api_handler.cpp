@@ -425,6 +425,12 @@ Status HttpRestApiHandler::dispatchToProcessor(
     std::string* response,
     const HttpRequestComponents& request_components,
     HttpResponseComponents& response_components) {
+        auto handler = handlers.find(Predict);
+        if (handler != handlers.end()) {
+            std::cout <<  "找到了呀2"  <<  std::endl;
+        }else{
+            std::cout <<  "没找到2"  <<  std::endl;
+        }
     std::cout <<"<request_components.type:"<<request_components.type << std::endl;
     auto handler = handlers.find(request_components.type);
     std::cout <<  "dispatchToProcessor1:" <<  std::endl;
